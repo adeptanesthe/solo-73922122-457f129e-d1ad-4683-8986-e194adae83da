@@ -1,7 +1,8 @@
-"""横拍转竖屏 9:16 裁切 —— FastAPI 后端。
+"""手工课机位切换：切点确认 + 分镜头竖屏 9:16 裁切 —— FastAPI 后端。
 
-流程：上传有序 PNG 帧 + 逐帧必留框 JSON -> 求解最优裁切轨迹 ->
-逐帧查看裁切结果，可拖动/锁定任一帧裁切窗后重新求解。
+流程：上传有序 PNG 帧 + 逐帧必留框 JSON -> 计算相邻帧背景灰度相关 ->
+网页按阈值得到建议切点并确认 -> 按已确认切点拆成镜头，各自求解最优裁切轨迹
+（改切点或锁定只重算受影响的镜头，其余命中缓存）-> 逐帧查看/拖动/锁定。
 """
 
 from __future__ import annotations
@@ -18,18 +19,21 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from . import solver
+from . import detect, solver
 
 MAX_FRAMES = 80
 MAX_SIDE = 512
+MAX_CACHE = 128  # 镜头结果缓存上限，超出即清空（缓存只是加速，可安全丢弃）
 
 BASE_DIR = Path(__file__).resolve().parent
 SAMPLE_DIR = Path(os.environ.get("SAMPLE_DIR", BASE_DIR.parent / "sample"))
+SAMPLES = ("a", "b", "c", "d")
 
-app = FastAPI(title="横拍转竖屏裁切")
+app = FastAPI(title="手工课切点确认与竖屏取景")
 
 # 单会话演示：服务端只保存一份当前工程
 SESSION: dict = {}
+_MAT = {"v": 0}  # 素材版本号：每次载入素材递增，用于识别迟到结果
 
 
 # ---------------------------------------------------------------- 工具
@@ -96,11 +100,14 @@ def _load_session(png_blobs: list[bytes], boxes_payload) -> dict:
 
     energies = [solver.window_energies(g) for g in grays]
     feasibles = [solver.feasible_mask(b, W, H) for b in frames_boxes]
+    pairs = detect.pair_stats(grays, frames_boxes)
     X = W - cw + 1
+    _MAT["v"] += 1
     session = {
         "n": len(grays), "w": W, "h": H, "cw": cw, "x_max": X - 1,
         "png": png_blobs, "boxes": frames_boxes,
         "energies": energies, "feasibles": feasibles,
+        "pairs": pairs, "mat": _MAT["v"], "cache": {},
     }
     SESSION.clear()
     SESSION.update(session)
@@ -116,7 +123,37 @@ def _meta(session: dict) -> dict:
         "n": session["n"], "w": session["w"], "h": session["h"],
         "cw": session["cw"], "x_max": session["x_max"],
         "boxes": session["boxes"], "feasible": feas,
+        "mat": session["mat"], "pairs": session["pairs"],
     }
+
+
+def solve_shots(session: dict, ranges: list[tuple[int, int]],
+                locks: dict[int, int]) -> list[dict]:
+    """逐镜头求解裁切轨迹；范围与锁定未变的镜头直接命中缓存（不重算）。
+
+    ranges: [(start, end), ...]，原片帧号区间，end 不含。
+    locks:  {原片帧号: x}，按镜头范围折算为镜头内下标交给求解器。
+    返回与 ranges 对齐的结果列表；失败时 fail_frame 为原片（全局）帧号。
+    """
+    cache = session["cache"]
+    results = []
+    for s, e in ranges:
+        sub = {i - s: x for i, x in locks.items() if s <= i < e}
+        key = (s, e, tuple(sorted(sub.items())))
+        hit = cache.get(key)
+        if hit is None:
+            traj, fail, total = solver.solve(
+                session["energies"][s:e], session["feasibles"][s:e], sub)
+            if traj is None:
+                hit = {"start": s, "end": e, "ok": False, "fail_frame": s + fail}
+            else:
+                hit = {"start": s, "end": e, "ok": True,
+                       "trajectory": traj, "energy": total}
+            if len(cache) >= MAX_CACHE:
+                cache.clear()
+            cache[key] = hit
+        results.append(hit)
+    return results
 
 
 # ---------------------------------------------------------------- 接口
@@ -135,7 +172,7 @@ async def api_upload(frames: list[UploadFile] = File(...),
 
 @app.post("/api/load_sample")
 async def api_load_sample(name: str = "a"):
-    if name not in ("a", "b"):
+    if name not in SAMPLES:
         raise HTTPException(400, "未知样片")
     d = SAMPLE_DIR / f"sample_{name}"
     if not d.is_dir():
@@ -150,25 +187,41 @@ async def api_load_sample(name: str = "a"):
     return _meta(session)
 
 
-class SolveRequest(BaseModel):
-    locks: dict[int, int] = {}
+class ShotRange(BaseModel):
+    start: int
+    end: int
 
 
-@app.post("/api/solve")
-async def api_solve(req: SolveRequest):
+class SolveShotsRequest(BaseModel):
+    mat: int                       # 发起请求时的素材版本
+    shots: list[ShotRange]         # 需要（重）求解的镜头范围
+    locks: dict[int, int] = {}     # 原片帧号 -> 锁定 x
+
+
+@app.post("/api/solve_shots")
+async def api_solve_shots(req: SolveShotsRequest):
     if not SESSION:
         raise HTTPException(400, "请先上传帧或载入样片")
+    if req.mat != SESSION["mat"]:
+        # 素材已变：迟到请求直接拒绝，结果不得覆盖当前预览
+        raise HTTPException(409, "素材已更新，该请求结果已过期，请按当前素材重新求解")
+    n = SESSION["n"]
     locks = {}
     for k, v in (req.locks or {}).items():
         i = int(k)
-        if not 0 <= i < SESSION["n"]:
+        if not 0 <= i < n:
             raise HTTPException(400, f"锁定帧号越界：{i}")
-        locks[i] = int(v)
-    traj, fail, total = solver.solve(SESSION["energies"], SESSION["feasibles"], locks)
-    if traj is None:
-        return {"ok": False, "fail_frame": fail,
-                "message": f"从首帧起第 {fail} 帧无法接续，完整轨迹接不出来"}
-    return {"ok": True, "trajectory": traj, "energy": total}
+        x = int(v)
+        if not 0 <= x <= SESSION["x_max"]:
+            raise HTTPException(400, f"锁定位置越界：帧 {i} x={x}")
+        locks[i] = x
+    ranges = []
+    for r in req.shots:
+        if not (0 <= r.start < r.end <= n):
+            raise HTTPException(400, f"镜头范围非法：[{r.start}, {r.end})")
+        ranges.append((r.start, r.end))
+    results = solve_shots(SESSION, ranges, locks)
+    return {"mat": req.mat, "results": results}
 
 
 @app.get("/api/frame/{idx}.png")

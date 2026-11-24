@@ -43,7 +43,7 @@ canvas {
 }
 #cvMain { cursor: ew-resize; }
 .locks { font-size: 13px; color: #444; margin-top: 6px; }
-.locks .chip {
+.chip {
   display: inline-block;
   background: #e8f0e8;
   border: 1px solid #9b9;
@@ -52,3 +52,34 @@ canvas {
   margin: 2px 4px 2px 0;
 }
 #frameLabel { font-weight: 600; }
+
+/* 切点与镜头 */
+.cuts { font-size: 13px; margin-top: 6px; }
+.cand {
+  display: inline-block;
+  background: #f0f4ff;
+  border: 1px solid #c9d6f2;
+  border-radius: 6px;
+  padding: 3px 8px;
+  margin: 3px 6px 0 0;
+  cursor: pointer;
+}
+.cand:hover { background: #e2eaff; }
+.cand.review { background: #fff6e5; border-color: #e8cf9a; }
+.cand.review:hover { background: #ffefd2; }
+button.mini { padding: 1px 8px; font-size: 12px; margin-left: 6px; }
+.chip.cut { background: #e8f0e8; border-color: #9b9; }
+.chip.cut .x {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin-left: 4px;
+  color: #a00;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip.shot { border: 1px solid #aaa; background: #f4f4f4; cursor: pointer; }
+.chip.shot.ok { background: #e9f7e9; border-color: #9c9; }
+.chip.shot.fail { background: #fbe6e6; border-color: #d99; color: #900; }
+.chip.shot.pending { background: #eef; border-color: #99c; }
+.hint { font-size: 12px; color: #777; }

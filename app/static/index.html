@@ -3,22 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>横拍转竖屏 9:16 裁切</title>
+  <title>手工课切点确认与竖屏取景</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <h1>横拍手工课 → 竖屏 9:16 裁切</h1>
+  <h1>手工课机位切换 · 切点确认与竖屏 9:16 取景</h1>
 
   <section class="panel">
     <div class="row">
       <label>有序 PNG 帧（≤80，同尺寸）<input type="file" id="fileFrames" multiple accept="image/png"></label>
       <label>逐帧必留框 JSON<input type="file" id="fileBoxes" accept=".json,application/json"></label>
       <button id="btnUpload">上传</button>
-      <button id="btnSampleA">载入样片 A（可解）</button>
-      <button id="btnSampleB">载入样片 B（不可解演示）</button>
-      <button id="btnSolve" disabled>求解</button>
+      <button id="btnSampleA">样片 A（单机位）</button>
+      <button id="btnSampleB">样片 B（单机位不可解）</button>
+      <button id="btnSampleC">样片 C（双机位切点）</button>
+      <button id="btnSampleD">样片 D（切点 + 镜头不可解）</button>
     </div>
     <div id="status" class="status"></div>
+  </section>
+
+  <section class="panel" id="cutPanel" hidden>
+    <div class="row">
+      <label>建议阈值 <input type="range" id="thr" min="0" max="1" step="0.01" value="0.90">
+        <b id="thrVal">0.90</b></label>
+      <span class="hint">相邻帧背景相关系数低于阈值即列为建议切点；调阈值只更新建议，不影响已确认切点与镜头。</span>
+    </div>
+    <div id="suggest" class="cuts"></div>
+    <div id="review" class="cuts"></div>
+    <div id="cuts" class="cuts"></div>
+  </section>
+
+  <section class="panel" id="shotPanel" hidden>
+    <div class="pane-title">镜头拆分（按已确认切点；改切点或锁定只重算受影响的镜头）</div>
+    <div id="shots" class="cuts"></div>
   </section>
 
   <section class="panel" id="viewer" hidden>
@@ -27,6 +44,10 @@
       <input type="range" id="slider" min="0" value="0">
       <button id="btnNext">下一帧 →</button>
       <span id="frameLabel"></span>
+      <span id="shotLabel" class="hint"></span>
+    </div>
+    <div class="row">
+      <button id="btnCut">在此帧前标记切点</button>
       <button id="btnLock">锁定本帧位置</button>
       <button id="btnUnlock">解锁本帧</button>
     </div>
